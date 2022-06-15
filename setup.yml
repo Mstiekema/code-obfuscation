@@ -1,0 +1,100 @@
+- hosts: localhost
+  tasks:
+  - name: Generate Python script for generating the correct folders
+    copy:
+      dest: "./build-folders.py"
+      content: |
+        import os
+        import shutil
+
+        dir = ["roles", "output", "scripts",]
+        parent = "{{ playbook_dir }}"
+
+        for d in dir:
+          path = os.path.join(parent, d)
+          try:
+            os.mkdir(path)
+          except:
+            ""
+
+  - name: Run the Python folder builder
+    command: python3 ./build-folders.py
+
+  - name: Move the build-folders.py to the scripts folder
+    command: mv ./build-folders.py ./scripts/build-folders.py
+
+  - name: Set ending integer
+    set_fact:
+      endN: "{{ number|int - 1 }}"
+
+  - name: Generate task for module for each number between 2...n-1
+    copy:
+      dest: "./roles/check-{{ item }}.yml"
+      content: |
+        - hosts: localhost
+          tasks:
+          - name: Check if {{ number }} is prime by performing {{ number }} % {{ item }} and set it as a fact
+            set_fact: 
+              result: '{{ "{{" }} {{ number }} {{ "%" }} {{ item }} }}'
+
+          - name: Write the fact to a file
+            file:
+              path: "{{ playbook_dir }}/output/{{ '{{ result }}' }}"
+              state: touch
+    with_sequence: start=2 end={{ endN }}
+
+  - name: Run all ansible playbooks for calculating 2...n-1
+    command: ansible-playbook ./roles/check-{{ item }}.yml
+    with_sequence: start=2 end={{ endN }}
+
+  - name: Load all result files
+    find:
+      paths: ./output/
+      file_type: file
+    register: results
+
+  - name: Create JS file to check if there was a modulo 0
+    copy:
+      dest: ./scripts/check-if-prime.js
+      content: |
+        const fs = require('fs');
+
+        let isPrime = 1;
+        let string = process.argv[2].slice(1, -1);
+        string = string.replaceAll(`${String.fromCharCode(92)}"`, `'`)
+        string = `{${string}}`
+        string.replaceAll(`'`, `"`)
+        let primeString = JSON.parse(string);
+        for (result in primeString.files) {
+          const filename = primeString.files[result].path;
+          const fileSplit = filename.split("/");
+          const number = parseInt(fileSplit[fileSplit.length - 1])
+          isPrime = isPrime * number;
+        }
+
+        console.log(isPrime)
+        result = isPrime != 0
+        fs.writeFile('{{ playbook_dir }}/isPrime', result.toString(), function (err) {});
+
+  - name: Run the JavaScript checker
+    command: node ./scripts/check-if-prime.js '{{ results|to_json(ensure_ascii=False) }}'
+
+  - name: Read if {{ number }} is prime
+    set_fact:
+      isPrime: "{{ lookup('file','./isPrime') }}"
+
+  - name: Clean up folder contents and isPrime
+    file:
+      path: "{{ item }}"
+      state: absent
+    with_items:
+      - ./output
+      - ./roles
+      - ./scripts
+      - ./isPrime
+
+  - name: Print to stdout if number is prime or not prime
+    command: echo "The number {{ number }} is prime; {{ isPrime }}"
+    register: result_string
+  
+  - debug: msg="{{ result_string.stdout }}"
